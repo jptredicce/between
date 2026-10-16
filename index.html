@@ -15730,6 +15730,7 @@ body.between-airmouse-running .between-custom-cursor{display:none!important;}
 #between-head-hidden-video,#between-airmouse-hidden-video{visibility:hidden!important;pointer-events:none!important}
 </style>
 
+<script src="./assets/voice/recognition.js"></script>
 <script id="between-professional-multimodal-script">
 
 (()=>{
@@ -16047,7 +16048,7 @@ async function toggleHead(){
  finally{starting.head=false;headBtn.disabled=false;}
 }
 // Voice guide with predefined answers; standalone spoken UI, never opens chat.
-const Recognition=window.SpeechRecognition||window.webkitSpeechRecognition;
+const Recognition=window.SpeechRecognition||window.webkitSpeechRecognition||window.BetweenLocalSpeechRecognition;
 const facts=[
  {re:/(what is between|what does between do|tell me about between|qué es between|que es between|qué hace between|que hace between)/i,a:'Between is the coordination infrastructure between companies. Its agents help suppliers and customers negotiate, verify commitments and coordinate decisions.'},
  {re:/(privac|private|data|secure|security|seguridad|datos|privacy)/i,a:'Between is designed so companies can coordinate decisions without exposing their internal systems. Each side retains control of its information.'},
@@ -16059,20 +16060,28 @@ const facts=[
 let assistantSpeaking=false,voiceInstance=null,voiceTimeout=null;
 const mmRoot=$('between-multimodal');
 const qa=document.createElement('form');qa.id='between-voice-fallback';qa.hidden=true;
-qa.innerHTML='<input id="between-voice-question" type="text" autocomplete="off" placeholder="Ask Between…" aria-label="Question about Between"/><button type="submit">Ask</button><button type="button" id="between-voice-retry" aria-label="Listen to my question">Listen</button>';
+qa.innerHTML='<div class="voice-conversation" aria-live="polite"><strong>Guía de BETWEEN</strong><p class="voice-question"></p><p class="voice-answer"></p></div><input id="between-voice-question" type="text" autocomplete="off" placeholder="Ask Between…" aria-label="Question about Between"/><button type="submit">Ask</button><button type="button" id="between-voice-retry" aria-label="Listen to my question">Listen</button>';
 mmRoot?.append(qa);
 function answerQuestion(question){
  const f=facts.find(v=>v.re.test(question));
- return f?f.a:'You can ask about Between, its agents, privacy, inventory coordination, the shared ledger or requesting a demo.';
+ const answers=[
+ 'Between es una infraestructura de coordinación entre empresas. Sus agentes ayudan a proveedores y clientes a negociar, verificar compromisos y coordinar decisiones.',
+ 'Cada empresa mantiene el control de sus datos. Between coordina las decisiones usando la información necesaria para el trabajo compartido.',
+ 'Los agentes de cada empresa negocian, verifican y documentan decisiones en un registro compartido que ambas partes pueden consultar.',
+ 'El registro compartido permite revisar qué hizo cada agente y qué decisiones se aprobaron. La página muestra el concepto; no está conectada a operaciones reales.',
+ 'Between está pensado para coordinar relaciones entre proveedores y clientes, incluyendo inventario y compromisos comerciales.',
+ 'Para explorar una demostración, usá Request Access. El contacto de esta maqueta todavía es un ejemplo y necesita configurarse.'
+ ];
+ return f?answers[facts.indexOf(f)]:'Soy la guía de esta página de Between. Puedo explicarte qué es Between, cómo funcionan sus agentes, la privacidad y el registro compartido. Todavía no estoy conectada a una IA para preguntas libres.';
 }
 function speakAnswer(text){
  if(!('speechSynthesis' in window)){setStatus('Este navegador no permite reproducir respuestas');return;}
  clearTimeout(voiceTimeout);
  if(voiceInstance){try{voiceInstance.abort()}catch(e){}}
- speechSynthesis.cancel();assistantSpeaking=true;voiceBtn.dataset.state='speaking';setStatus('Voice · respondiendo');
- const utterance=new SpeechSynthesisUtterance(text);utterance.lang='en-US';utterance.rate=.96;utterance.pitch=1;
+ speechSynthesis.cancel();assistantSpeaking=true;voiceBtn.dataset.state='speaking';setStatus('Voice · respondiendo');qa.querySelector('.voice-answer').textContent=text;
+ const utterance=new SpeechSynthesisUtterance(text);utterance.lang='es-ES';utterance.rate=.96;utterance.pitch=1;
  const voices=speechSynthesis.getVoices();
- utterance.voice=voices.find(v=>/Samantha|Ava|Allison|Siri|Daniel|Alex|Google US English|Microsoft Aria/i.test(v.name)&&/^en/i.test(v.lang))||voices.find(v=>/^en-US/i.test(v.lang))||null;
+ utterance.voice=voices.find(v=>/^es/i.test(v.lang)&&/Monica|Mónica|Paulina|Luciana|Natural|Google/i.test(v.name))||voices.find(v=>/^es/i.test(v.lang))||null;
  utterance.onend=utterance.onerror=()=>{assistantSpeaking=false;if(modes.voice){voiceBtn.dataset.state='active';setStatus(voiceInstance?'Voice · esperando pregunta':'Voice · escribí tu pregunta');if(voiceInstance)scheduleListen(700);}};
  speechSynthesis.speak(utterance);
 }
@@ -16091,16 +16100,17 @@ function stopVoice(){
 function toggleVoice(){
  if(modes.voice){stopVoice();return;}
  modes.voice=true;setMode(voiceBtn,true);qa.hidden=false;
- if(!Recognition){setStatus('Voice · Safari no puede transcribir desde este archivo; escribí tu pregunta y escucharás la respuesta.');speakAnswer('Hello, I am Between. Ask me about our agents, privacy, coordination or the shared ledger.');return;}
+ if(!Recognition){setStatus('Voice · Safari no puede transcribir desde este archivo; escribí tu pregunta y escucharás la respuesta.');speakAnswer('Hola, soy la guía de Between. Podés preguntarme por los agentes, la privacidad y el registro compartido.');return;}
  try{
-  voiceInstance=new Recognition();voiceInstance.lang='en-US';voiceInstance.continuous=false;voiceInstance.interimResults=false;voiceInstance.maxAlternatives=1;
-  voiceInstance.onresult=e=>{const q=Array.from(e.results,r=>r[0]?.transcript||'').join(' ').trim();if(q&&modes.voice){setStatus('Escuché: '+q);speakAnswer(answerQuestion(q));}};
+  voiceInstance=new Recognition();voiceInstance.lang='es-ES';voiceInstance.continuous=false;voiceInstance.interimResults=false;voiceInstance.maxAlternatives=1;
+  voiceInstance.onresult=e=>{const q=Array.from(e.results,r=>r[0]?.transcript||'').join(' ').trim();if(q&&modes.voice){qa.querySelector('.voice-question').textContent='Vos: '+q;setStatus('Escuché: '+q);speakAnswer(answerQuestion(q));}};
+  voiceInstance.onloading=()=>setStatus('Voice · preparando voz en español; la primera carga puede demorar');
   voiceInstance.onstart=()=>{if(modes.voice){voiceBtn.dataset.state='tracking';setStatus('Voice · escuchando, hacé tu pregunta');}};
   voiceInstance.onend=()=>{if(modes.voice&&!assistantSpeaking&&voiceInstance)scheduleListen(1100);};
   voiceInstance.onerror=e=>{
    const kind=e.error||'unknown';
    if(['not-allowed','service-not-allowed','audio-capture','network','language-not-supported'].includes(kind)){
-    const message='Voice · Safari no pudo reconocer la voz ('+kind+'). Escribí tu pregunta para escuchar la respuesta.';
+    const message='Voice · '+(kind==='not-allowed'?'permití el micrófono para hablar':(e.message||'no se pudo reconocer la voz ('+kind+')'));
     const old=voiceInstance;voiceInstance=null;clearTimeout(voiceTimeout);
     try{old?.abort()}catch(_){}setStatus(message);
    }else if(kind==='no-speech'){setStatus('Voice · no escuché ninguna pregunta, probá otra vez');}
@@ -16133,7 +16143,7 @@ function loop(now){
   const visibleX=assist?assist.x:pointerX,visibleY=assist?assist.y:pointerY;
   cursor.style.display='block';cursor.style.transform=`translate(${Math.round(visibleX-8)}px,${Math.round(visibleY-8)}px)`;
   cursor.classList.toggle('is-hover',!!assist);
- }else cursor.style.display='none';
+ }else if(!window.betweenExternalAirActive)cursor.style.display='none';
  if(modes.head){
   if(now-faceLast>headProfile.lostAfter)headTarget=0;
   // Suspend Head while the physical mouse or Air Mouse is being moved.
@@ -16189,7 +16199,8 @@ document.addEventListener('visibilitychange',()=>{if(document.hidden){headTarget
 #between-multimodal button[data-state="speaking"] .mm-dot{background:#d7e8ff!important}
 </style><style id="between-multimodal-firefox-fallback">
 #between-voice-fallback[hidden]{display:none!important}
-#between-voice-fallback{display:flex;gap:6px;align-items:center;max-width:330px;padding:5px;background:#262830;border-radius:22px}
+#between-voice-fallback .voice-conversation{flex:0 0 100%;font-size:13px;line-height:1.5;color:#fff;max-height:200px;overflow:auto;}#between-voice-fallback .voice-conversation p{margin:8px;}
+#between-voice-fallback{flex-wrap:wrap;display:flex;gap:6px;align-items:center;max-width:330px;padding:5px;background:#262830;border-radius:22px}
 #between-voice-fallback input{background:#262830;border:0;outline:0;color:#fff;min-width:0;width:175px;padding:7px;font:13px Space Grotesk,Arial,sans-serif}
 #between-voice-fallback button{background:#101319!important;border:0!important;border-radius:20px!important;color:#fff!important;padding:8px 12px!important}
 </style>
@@ -16231,7 +16242,7 @@ document.addEventListener('visibilitychange',()=>{if(document.hidden){headTarget
 #between-airmouse-toggle[data-state="loading"]{opacity:.65;}
 </style>
 <script type="module" id="between-external-handcursor-module">
-import { HandCursor } from 'https://cdn.jsdelivr.net/gh/CR8C0NT1NUM/mediapipe-hand-cursor@main/hand-cursor.js';
+import { HandCursor } from './assets/head/air-mouse.js?v=1';
 const btn=document.getElementById('between-airmouse-toggle');
 const cursor=document.getElementById('between-airmouse-cursor');
 const status=document.getElementById('between-multimodal-status');
@@ -16282,12 +16293,13 @@ btn?.addEventListener('click',async()=>{
  }
  try{
    starting=true;btn.dataset.state='loading';notify('Iniciando seguimiento de mano…');
-   if(!engine)engine=new HandCursor({onCursor,onStatus:notify});
+   if(!engine){engine=new HandCursor({onCursor,onStatus:notify});engine.onError=()=>{window.betweenExternalAirActive=false;btn.dataset.state='error';btn.setAttribute('aria-pressed','false');cursor.style.display='none';};}
    await engine.start();window.betweenExternalAirActive=true;
    btn.dataset.state='tracking';btn.setAttribute('aria-pressed','true');notify('Air Mouse listo · índice mueve, pinza hace clic');
  }catch(err){notify('Air Mouse: '+(err?.message||'no pudo iniciarse'));btn.dataset.state='error';console.error(err);}
  finally{starting=false;}
 });
+window.BetweenAirDiagnostics=()=>({active:window.betweenExternalAirActive,...(engine?.metrics||{})});
 window.addEventListener('pagehide',()=>{try{engine?.stop()}catch(e){}});
 </script>
 
