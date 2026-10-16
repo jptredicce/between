@@ -15729,6 +15729,38 @@ body.between-airmouse-running .between-custom-cursor{display:none!important;}
 /* No camera previews; physical input is left untouched. */
 #between-head-hidden-video,#between-airmouse-hidden-video{visibility:hidden!important;pointer-events:none!important}
 </style>
+<script type="text/plain" id="between-head-worker-source">
+// Pinned runtime and model; the worker owns all inference and WASM memory.
+let detector=null;
+self.onmessage=async({data})=>{
+ if(data.type==='init'){
+  try{
+   const {FaceLandmarker,FilesetResolver}=await import('https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.32/vision_bundle.mjs');
+   const files=await FilesetResolver.forVisionTasks('https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.32/wasm');
+   detector=await FaceLandmarker.createFromOptions(files,{
+    baseOptions:{modelAssetPath:'https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task',delegate:'CPU'},
+    canvas:new OffscreenCanvas(1,1),runningMode:'VIDEO',numFaces:1,
+    outputFaceBlendshapes:false,outputFacialTransformationMatrixes:false,
+    minFaceDetectionConfidence:.55,minTrackingConfidence:.5
+   });
+   self.postMessage({type:'ready'});
+  }catch(error){self.postMessage({type:'error',message:error.message||String(error)});}
+  return;
+ }
+ if(data.type==='frame'){
+  const started=performance.now();
+  try{
+   if(!detector)throw new Error('El detector todavía no está listo');
+   const result=detector.detectForVideo(data.image,data.timestamp);
+   const p=result.faceLandmarks?.[0];
+   let pitch=null;
+   if(p){const h=Math.max(.08,Math.hypot(p[10].x-p[152].x,p[10].y-p[152].y));pitch=(p[1].y-(p[33].y+p[263].y)*.5)/h;}
+   self.postMessage({type:'result',id:data.id,pitch,elapsed:performance.now()-started});
+  }catch(error){self.postMessage({type:'error',id:data.id,message:error.message||String(error)});}
+  finally{data.image.close();}
+ }
+};
+</script>
 <script id="between-professional-multimodal-script">
 
 (()=>{
@@ -15744,7 +15776,7 @@ const modes={air:false,head:false,voice:false,handScroll:false};
 // Firefox uses a lighter face input; other browsers retain their existing tuning.
 const headFirefox=/Firefox\//.test(navigator.userAgent);
 const headProfile=headFirefox
- ? {maxWidth:320,calibrationFrames:10,lostAfter:650,blend:.35,refine:false,interval:100,ease:8,maxStep:12}
+ ? {maxWidth:320,calibrationFrames:10,lostAfter:650,blend:.45,refine:false,interval:50,ease:12,maxStep:Infinity}
  : {maxWidth:Infinity,calibrationFrames:20,lostAfter:400,blend:.50,refine:true,interval:65,ease:19,maxStep:Infinity};
 let source=null,handDetector=null,faceDetector=null,handBusy=false,faceBusy=false,frame=0,lastFrame=0,starting={},loaders={};
 // Upload a decoded canvas frame rather than a hidden video texture to WebGL.
@@ -15755,6 +15787,7 @@ let handLast=0,faceLast=0,pinchDown=false,pinchStart=0,pinchStartY=0,pinchMoved=
 let physicalMouseAt=0,physicalX=0,physicalY=0,pointerActive=false,headPitchOrigin=null,calibration=[];
 let lastAirMotionAt=0,lastPointerMotionX=null,lastPointerMotionY=null,headSuspended=false,airClickEl=null;
 let headSpeed=0,headTarget=0,headDelta=0,headLastTime=0,browOrigin=null,browRise=0,browTriggered=false,browStart=0;
+let headScrollRemainder=0;
 let handScrollLastY=null,handScrollSpeed=0;
  let pinchFrames=0, releaseFrames=0, pinchAnchorX=0, pinchAnchorY=0, pinchZoomAnchor=1;
  let trackingX=null, trackingY=null, clickCooldown=0, lostHandAt=0;
@@ -15884,14 +15917,57 @@ function handleHands(result){
  }
  cursor.classList.remove('is-paused');airBtn.dataset.state='tracking';
 }
+
+function createHeadWorker(){
+ if(typeof Worker==='undefined'||typeof OffscreenCanvas==='undefined'||typeof createImageBitmap!=='function')throw new Error('Este navegador no permite el motor Head en segundo plano');
+ const url=URL.createObjectURL(new Blob([document.getElementById('between-head-worker-source').textContent],{type:'text/javascript'}));
+ const worker=new Worker(url);URL.revokeObjectURL(url);
+ let resolveReady,rejectReady,callback,pending=null,closed=false,capturing=false,sequence=0,averageMs=50;
+ const ready=new Promise((resolve,reject)=>{resolveReady=resolve;rejectReady=reject});
+ const initTimeout=setTimeout(()=>abort(new Error('El detector tardó demasiado en cargar; revisá tu conexión')),45000);
+ function abort(error){clearTimeout(initTimeout);rejectReady(error);if(pending){clearTimeout(pending.timeout);pending.reject(error);pending=null;}}
+ worker.onerror=event=>{event.preventDefault();abort(new Error(event.message||'No se pudo iniciar Head en segundo plano'));};
+ worker.onmessage=({data})=>{
+  if(closed)return;
+  if(data.type==='ready'){clearTimeout(initTimeout);resolveReady();return;}
+  if(data.type==='error'){abort(new Error(data.message));return;}
+  if(data.type==='result'&&pending&&data.id===pending.id){
+   const job=pending;pending=null;clearTimeout(job.timeout);
+   averageMs=averageMs*.8+data.elapsed*.2;
+   api.interval=Math.max(40,Math.min(160,averageMs*1.15));
+   api.metrics={inferenceMs:Math.round(averageMs),roundTripMs:Math.round(performance.now()-job.started)};
+   if(performance.now()-job.started<500)callback?.({pitch:data.pitch});
+   else callback?.({pitch:null});
+   job.resolve();
+  }
+ };
+ const api={interval:50,metrics:{},setOptions(){},onResults(fn){callback=fn},initialize(){worker.postMessage({type:'init'});return ready},
+  async send({image}){
+   if(closed)throw new Error('Head está desactivado');
+   if(pending||capturing)return; // Backpressure includes asynchronous frame capture.
+   capturing=true;let bitmap;
+   try{bitmap=await createImageBitmap(image);}finally{capturing=false;}
+   if(closed){bitmap.close();return;}
+   return new Promise((resolve,reject)=>{
+    const id=++sequence;
+    const timeout=setTimeout(()=>{if(pending?.id===id){pending=null;reject(new Error('El detector dejó de responder'));}},5000);
+    pending={id,resolve,reject,timeout,started:performance.now()};
+    try{worker.postMessage({type:'frame',id,image:bitmap,timestamp:performance.now()},[bitmap]);}
+    catch(error){bitmap.close();clearTimeout(timeout);pending=null;reject(error);}
+   });
+  },
+  close(){if(closed)return;closed=true;clearTimeout(initTimeout);rejectReady(new Error('Head está desactivado'));if(pending){clearTimeout(pending.timeout);pending.resolve();pending=null;}worker.terminate();}
+ };
+ return api;
+}
+
+window.BetweenHeadDiagnostics=()=>({engine:headFirefox?'worker-cpu':'legacy',active:modes.head,calibrated:headPitchOrigin!==null,...(faceDetector?.metrics||{})});
 function handleFace(result){
  if(!modes.head)return;
  const p=result.multiFaceLandmarks?.[0],now=performance.now();
- if(!p){if(headFirefox||now-faceLast>340){headTarget=0;headBtn.dataset.state='active';}return;}
+ if(!p&&!Number.isFinite(result.pitch)){if(headFirefox||now-faceLast>340){headTarget=0;headBtn.dataset.state='active';}return;}
  faceLast=now;headBtn.dataset.state='tracking';
- const faceH=Math.max(.08,len(p[10],p[152]));
- const eyeY=(p[33].y+p[263].y)*.5;
- const pitch=(p[1].y-eyeY)/faceH;
+ const pitch=Number.isFinite(result.pitch)?result.pitch:(p[1].y-(p[33].y+p[263].y)*.5)/Math.max(.08,len(p[10],p[152]));
  if(headPitchOrigin===null){
   calibration.push(pitch);
   if(calibration.length<headProfile.calibrationFrames){setStatus('Head · mirá al frente para calibrar');return;}
@@ -15922,14 +15998,14 @@ async function initHand(){
  handDetector.onResults(handleHands);
 }
 async function initFace(){
- await Promise.all([startCamera(),load('face',SDK_FACE+'face_mesh.js','FaceMesh')]);
+ await Promise.all([startCamera(),headFirefox?Promise.resolve():load('face',SDK_FACE+'face_mesh.js','FaceMesh')]);
  if(!modes.head)return;
  // Keep the detector private until WASM initialization has finished. The frame
  // loop must never call send() while initialize() is still loading its memory.
- const detector=new window.FaceMesh({locateFile:f=>SDK_FACE+f});
+ const detector=headFirefox?createHeadWorker():new window.FaceMesh({locateFile:f=>SDK_FACE+f});
  detector.setOptions({maxNumFaces:1,refineLandmarks:headProfile.refine,minDetectionConfidence:.55,minTrackingConfidence:.5});
  detector.onResults(handleFace);headPitchOrigin=null;calibration=[];browOrigin=null;
- headDelta=0;headSpeed=0;headTarget=0;
+ headDelta=0;headSpeed=0;headTarget=0;headScrollRemainder=0;
  try{await detector.initialize();}
  catch(error){try{await detector.close();}catch(_){}throw error;}
  if(!modes.head){await detector.close();return;}
@@ -16054,20 +16130,27 @@ function loop(now){
   // Suspend Head while the physical mouse or Air Mouse is being moved.
   // Keep the head mode enabled and resume after a short quiet interval.
   headSuspended=(window.betweenExternalAirActive&&now-(window.betweenExternalAirMotionAt||0)<850)||(now-physicalMouseAt<850);
-  if(headSuspended){headSpeed=0;}
+  if(headSuspended||document.hidden){headSpeed=0;headScrollRemainder=0;}
   else{
     const factor=1-Math.exp(-(headTarget?headProfile.ease:23)*dt);
     headSpeed+=(headTarget-headSpeed)*factor;
     // Head already smooths speed above. CSS smooth scrolling would restart an
     // animation on every frame and prevent Firefox from reaching that speed.
-    if(Math.abs(headSpeed)>1)window.scrollBy({top:clamp(headSpeed*dt,-headProfile.maxStep,headProfile.maxStep),left:0,behavior:'instant'});
+    if(Math.abs(headSpeed)>1){
+     if(headFirefox){
+      // Preserve fractional pixels instead of rounding each small scroll to zero.
+      headScrollRemainder+=headSpeed*Math.min(dt,.032);
+      const pixels=Math.trunc(headScrollRemainder);headScrollRemainder-=pixels;
+      if(pixels)window.scrollBy({top:pixels,left:0,behavior:'instant'});
+     }else window.scrollBy({top:headSpeed*dt,left:0,behavior:'instant'});
+    }else headScrollRemainder=0;
   }
  }
- // Keep face analysis at 10fps in Firefox to leave time for rendering; never overlap detector requests.
+ // Adaptive worker cadence; a single frame in flight, with no stale-frame queue.
  if(source&&now-(loop.lastHand||0)>65&&(modes.air||modes.handScroll)&&handDetector&&!handBusy&&handVideo?.readyState>=2){
   loop.lastHand=now;handBusy=true;Promise.resolve(handDetector.send({image:handVideo})).catch(()=>{}).finally(()=>{handBusy=false});
  }
- if(source&&now-(loop.lastFace||0)>headProfile.interval&&modes.head&&faceDetector&&!faceBusy&&faceVideo?.readyState>=2){
+ if(source&&now-(loop.lastFace||0)>(faceDetector?.interval||headProfile.interval)&&!document.hidden&&modes.head&&faceDetector&&!faceBusy&&faceVideo?.readyState>=2){
   loop.lastFace=now;faceBusy=true;
   const detector=faceDetector;
   Promise.resolve().then(()=>{
