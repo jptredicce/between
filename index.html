@@ -15742,6 +15742,9 @@ const SDK_HAND='https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4/';
 const SDK_FACE='https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh@0.4/';
 const modes={air:false,head:false,voice:false,handScroll:false};
 let source=null,handDetector=null,faceDetector=null,handBusy=false,faceBusy=false,frame=0,lastFrame=0,starting={},loaders={};
+// Upload a decoded canvas frame rather than a hidden video texture to WebGL.
+const faceInput=document.createElement('canvas');
+const faceContext=faceInput.getContext('2d');
 let pointerX=innerWidth/2,pointerY=innerHeight/2,pointerTX=pointerX,pointerTY=pointerY;
 let handLast=0,faceLast=0,pinchDown=false,pinchStart=0,pinchStartY=0,pinchMoved=false,zoomLevel=1,lastZoomAt=0,handPause=true;
 let physicalMouseAt=0,physicalX=0,physicalY=0,pointerActive=false,headPitchOrigin=null,calibration=[];
@@ -15888,6 +15891,7 @@ function handleFace(result){
   calibration.push(pitch);
   if(calibration.length<20){setStatus('Head · mirá al frente para calibrar');return;}
   headPitchOrigin=calibration.reduce((a,b)=>a+b,0)/calibration.length;
+  setStatus('Head · listo; incliná la cabeza arriba o abajo');
  }
  headDelta=headDelta*.50+(pitch-headPitchOrigin)*.50;
  const d=headDelta;
@@ -15918,6 +15922,8 @@ async function initFace(){
  faceDetector=new window.FaceMesh({locateFile:f=>SDK_FACE+f});
  faceDetector.setOptions({maxNumFaces:1,refineLandmarks:true,minDetectionConfidence:.55,minTrackingConfidence:.5});
  faceDetector.onResults(handleFace);headPitchOrigin=null;calibration=[];browOrigin=null;
+ headDelta=0;headSpeed=0;headTarget=0;
+ await faceDetector.initialize();
 }
 async function toggleAir(){
  if(modes.air){modes.air=false;setMode(airBtn,false);cursor.style.display='none';if(!modes.handScroll){handDetector?.close();handDetector=null;}stopCameraIfUnused();return;}
@@ -15926,12 +15932,21 @@ async function toggleAir(){
  try{if(!handDetector)await initHand();setStatus('Air Mouse · mové el índice; juntá índice y pulgar para clic; mantené para arrastrar');}
  catch(e){modes.air=false;setMode(airBtn,false,'error');setStatus('Air Mouse · '+(e.message||'cámara no disponible'));stopCameraIfUnused();}
 }
+function failHead(error){
+ modes.head=false;headTarget=0;headSpeed=0;
+ setMode(headBtn,false);headBtn.dataset.state='error';
+ const detector=faceDetector;faceDetector=null;
+ if(detector)Promise.resolve().then(()=>detector.close()).catch(()=>{});
+ console.error('Head tracking failed:',error);
+ const message=error?.name==='NotAllowedError'?'permití el acceso a la cámara y volvé a activar Head':(error?.message||'no se pudo iniciar el detector');
+ setStatus('Head · '+message);stopCameraIfUnused();
+}
 async function toggleHead(){
  if(modes.head){modes.head=false;headTarget=0;setMode(headBtn,false);faceDetector?.close();faceDetector=null;stopCameraIfUnused();return;}
  
  modes.head=true;setMode(headBtn,true,'active');setStatus('Head · autorizá la cámara');
  try{if(!faceDetector)await initFace();setStatus('Head · mirá al frente para calibrar');}
- catch(e){modes.head=false;setMode(headBtn,false,'error');setStatus('Head · '+(e.message||'cámara no disponible'));stopCameraIfUnused();}
+ catch(e){failHead(e);}
 }
 // Voice guide with predefined answers; standalone spoken UI, never opens chat.
 const Recognition=window.SpeechRecognition||window.webkitSpeechRecognition;
@@ -16038,7 +16053,17 @@ function loop(now){
   loop.lastHand=now;handBusy=true;Promise.resolve(handDetector.send({image:handVideo})).catch(()=>{}).finally(()=>{handBusy=false});
  }
  if(source&&now-(loop.lastFace||0)>65&&modes.head&&faceDetector&&!faceBusy&&faceVideo?.readyState>=2){
-  loop.lastFace=now;faceBusy=true;Promise.resolve(faceDetector.send({image:faceVideo})).catch(()=>{}).finally(()=>{faceBusy=false});
+  loop.lastFace=now;faceBusy=true;
+  const detector=faceDetector;
+  Promise.resolve().then(()=>{
+   if(!modes.head||faceDetector!==detector)return;
+   if(!faceContext)throw new Error('No se pudo preparar la imagen de la cámara');
+   const w=faceVideo.videoWidth,h=faceVideo.videoHeight;
+   if(!w||!h)return;
+   if(faceInput.width!==w||faceInput.height!==h){faceInput.width=w;faceInput.height=h;}
+   faceContext.drawImage(faceVideo,0,0,w,h);
+   return detector.send({image:faceInput});
+  }).catch(error=>{if(modes.head&&faceDetector===detector)failHead(error);}).finally(()=>{faceBusy=false});
  }
  frame=requestAnimationFrame(loop);
 }
