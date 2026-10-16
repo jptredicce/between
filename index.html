@@ -15729,38 +15729,7 @@ body.between-airmouse-running .between-custom-cursor{display:none!important;}
 /* No camera previews; physical input is left untouched. */
 #between-head-hidden-video,#between-airmouse-hidden-video{visibility:hidden!important;pointer-events:none!important}
 </style>
-<script type="text/plain" id="between-head-worker-source">
-// Pinned runtime and model; the worker owns all inference and WASM memory.
-let detector=null;
-self.onmessage=async({data})=>{
- if(data.type==='init'){
-  try{
-   const {FaceLandmarker,FilesetResolver}=await import('https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.32/vision_bundle.mjs');
-   const files=await FilesetResolver.forVisionTasks('https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.32/wasm');
-   detector=await FaceLandmarker.createFromOptions(files,{
-    baseOptions:{modelAssetPath:'https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task',delegate:'CPU'},
-    canvas:new OffscreenCanvas(1,1),runningMode:'VIDEO',numFaces:1,
-    outputFaceBlendshapes:false,outputFacialTransformationMatrixes:false,
-    minFaceDetectionConfidence:.55,minTrackingConfidence:.5
-   });
-   self.postMessage({type:'ready'});
-  }catch(error){self.postMessage({type:'error',message:error.message||String(error)});}
-  return;
- }
- if(data.type==='frame'){
-  const started=performance.now();
-  try{
-   if(!detector)throw new Error('El detector todavía no está listo');
-   const result=detector.detectForVideo(data.image,data.timestamp);
-   const p=result.faceLandmarks?.[0];
-   let pitch=null;
-   if(p){const h=Math.max(.08,Math.hypot(p[10].x-p[152].x,p[10].y-p[152].y));pitch=(p[1].y-(p[33].y+p[263].y)*.5)/h;}
-   self.postMessage({type:'result',id:data.id,pitch,elapsed:performance.now()-started});
-  }catch(error){self.postMessage({type:'error',id:data.id,message:error.message||String(error)});}
-  finally{data.image.close();}
- }
-};
-</script>
+
 <script id="between-professional-multimodal-script">
 
 (()=>{
@@ -15920,8 +15889,7 @@ function handleHands(result){
 
 function createHeadWorker(){
  if(typeof Worker==='undefined'||typeof OffscreenCanvas==='undefined'||typeof createImageBitmap!=='function')throw new Error('Este navegador no permite el motor Head en segundo plano');
- const url=URL.createObjectURL(new Blob([document.getElementById('between-head-worker-source').textContent],{type:'text/javascript'}));
- const worker=new Worker(url);URL.revokeObjectURL(url);
+ const worker=new Worker(new URL('assets/head/head-worker.js?v=2',document.baseURI));
  let resolveReady,rejectReady,callback,pending=null,closed=false,capturing=false,sequence=0,averageMs=50;
  const ready=new Promise((resolve,reject)=>{resolveReady=resolve;rejectReady=reject});
  const initTimeout=setTimeout(()=>abort(new Error('El detector tardó demasiado en cargar; revisá tu conexión')),45000);
@@ -15941,7 +15909,7 @@ function createHeadWorker(){
    job.resolve();
   }
  };
- const api={interval:50,metrics:{},setOptions(){},onResults(fn){callback=fn},initialize(){worker.postMessage({type:'init'});return ready},
+ const api={kind:'worker',interval:50,metrics:{},setOptions(){},onResults(fn){callback=fn},initialize(){worker.postMessage({type:'init'});return ready},
   async send({image}){
    if(closed)throw new Error('Head está desactivado');
    if(pending||capturing)return; // Backpressure includes asynchronous frame capture.
@@ -15961,7 +15929,54 @@ function createHeadWorker(){
  return api;
 }
 
-window.BetweenHeadDiagnostics=()=>({engine:headFirefox?'worker-cpu':'legacy',active:modes.head,calibrated:headPitchOrigin!==null,...(faceDetector?.metrics||{})});
+
+async function createHeadCompatible(){
+ const base=new URL('assets/head/',document.baseURI);
+ const {FaceLandmarker,FilesetResolver}=await import(new URL('vision_bundle.mjs',base).href);
+ const files=await FilesetResolver.forVisionTasks(base.href.replace(/\/$/,''));
+ let detector=null,callback,closed=false;
+ return {kind:'compatible',interval:100,metrics:{},setOptions(){},onResults(fn){callback=fn},
+  async initialize(){
+   detector=await FaceLandmarker.createFromOptions(files,{
+    baseOptions:{modelAssetPath:new URL('face_landmarker.task',base).href,delegate:'CPU'},
+    canvas:document.createElement('canvas'),runningMode:'VIDEO',numFaces:1,
+    outputFaceBlendshapes:false,outputFacialTransformationMatrixes:false,
+    minFaceDetectionConfidence:.55,minTrackingConfidence:.5
+   });
+   if(closed){detector.close();detector=null;}
+  },
+  async send({image}){
+   if(closed||!detector)return;
+   const t=performance.now(),result=detector.detectForVideo(image,t);
+   this.metrics={inferenceMs:Math.round(performance.now()-t)};
+   callback?.({multiFaceLandmarks:result.faceLandmarks});
+  },
+  close(){closed=true;detector?.close();detector=null;}
+ };
+}
+let headLastError='',headRecoveries=0,headFrameErrors=0;
+function resetHeadCalibration(){headPitchOrigin=null;calibration=[];headDelta=0;headSpeed=0;headTarget=0;headScrollRemainder=0;}
+async function prepareHeadDetector(detector){
+ detector.setOptions({maxNumFaces:1,refineLandmarks:headProfile.refine,minDetectionConfidence:.55,minTrackingConfidence:.5});
+ detector.onResults(handleFace);
+ try{await detector.initialize();}
+ catch(error){try{await detector.close();}catch(_){}throw error;}
+ if(!modes.head){await detector.close();return;}
+ faceDetector=detector;headFrameErrors=0;resetHeadCalibration();
+}
+async function recoverHead(error){
+ if(!modes.head)return;
+ headLastError=error?.message||String(error);
+ if(!headFirefox||headRecoveries>=1){failHead(error);return;}
+ headRecoveries++;
+ const old=faceDetector;faceDetector=null;headTarget=0;headSpeed=0;
+ try{await old?.close();}catch(_){}
+ setStatus('Head · recuperando detector');headBtn.dataset.state='active';
+ try{await prepareHeadDetector(await createHeadCompatible());if(modes.head)setStatus('Head · mirá al frente para calibrar');}
+ catch(nextError){if(modes.head)failHead(nextError);}
+}
+
+window.BetweenHeadDiagnostics=()=>({engine:faceDetector?.kind||(headFirefox?'worker':'legacy'),lastError:headLastError,active:modes.head,calibrated:headPitchOrigin!==null,...(faceDetector?.metrics||{})});
 function handleFace(result){
  if(!modes.head)return;
  const p=result.multiFaceLandmarks?.[0],now=performance.now();
@@ -16000,16 +16015,10 @@ async function initHand(){
 async function initFace(){
  await Promise.all([startCamera(),headFirefox?Promise.resolve():load('face',SDK_FACE+'face_mesh.js','FaceMesh')]);
  if(!modes.head)return;
- // Keep the detector private until WASM initialization has finished. The frame
- // loop must never call send() while initialize() is still loading its memory.
- const detector=headFirefox?createHeadWorker():new window.FaceMesh({locateFile:f=>SDK_FACE+f});
- detector.setOptions({maxNumFaces:1,refineLandmarks:headProfile.refine,minDetectionConfidence:.55,minTrackingConfidence:.5});
- detector.onResults(handleFace);headPitchOrigin=null;calibration=[];browOrigin=null;
- headDelta=0;headSpeed=0;headTarget=0;headScrollRemainder=0;
- try{await detector.initialize();}
- catch(error){try{await detector.close();}catch(_){}throw error;}
- if(!modes.head){await detector.close();return;}
- faceDetector=detector;
+ if(headFirefox){
+  try{await prepareHeadDetector(createHeadWorker());}
+  catch(error){headLastError=error.message;headRecoveries=1;setStatus('Head · iniciando modo compatible');await prepareHeadDetector(await createHeadCompatible());}
+ }else await prepareHeadDetector(new window.FaceMesh({locateFile:f=>SDK_FACE+f}));
 }
 async function toggleAir(){
  if(modes.air){modes.air=false;setMode(airBtn,false);cursor.style.display='none';if(!modes.handScroll){handDetector?.close();handDetector=null;}stopCameraIfUnused();return;}
@@ -16023,7 +16032,7 @@ function failHead(error){
  setMode(headBtn,false);headBtn.dataset.state='error';
  const detector=faceDetector;faceDetector=null;
  if(detector)Promise.resolve().then(()=>detector.close()).catch(()=>{});
- console.error('Head tracking failed:',error);
+ headLastError=error?.message||String(error);console.error('Head tracking failed:',error);
  const message=error?.name==='NotAllowedError'?'permití el acceso a la cámara y volvé a activar Head':(error?.message||'no se pudo iniciar el detector');
  setStatus('Head · '+message);stopCameraIfUnused();
 }
@@ -16031,7 +16040,7 @@ async function toggleHead(){
  if(starting.head)return;
  if(modes.head){modes.head=false;headTarget=0;setMode(headBtn,false);faceDetector?.close();faceDetector=null;stopCameraIfUnused();return;}
  
- modes.head=true;setMode(headBtn,true,'active');setStatus('Head · autorizá la cámara');
+ headRecoveries=0;headFrameErrors=0;headLastError='';modes.head=true;setMode(headBtn,true,'active');setStatus('Head · autorizá la cámara');
  starting.head=true;headBtn.disabled=true;
  try{if(!faceDetector)await initFace();if(modes.head)setStatus('Head · mirá al frente para calibrar');}
  catch(e){failHead(e);}
@@ -16162,8 +16171,8 @@ function loop(now){
    const w=Math.max(1,Math.round(videoW*scale)),h=Math.max(1,Math.round(videoH*scale));
    if(faceInput.width!==w||faceInput.height!==h){faceInput.width=w;faceInput.height=h;}
    faceContext.drawImage(faceVideo,0,0,w,h);
-   return detector.send({image:faceInput});
-  }).catch(error=>{if(modes.head&&faceDetector===detector)failHead(error);}).finally(()=>{faceBusy=false});
+   return detector.send({image:faceInput}).then(()=>{headFrameErrors=0});
+  }).catch(error=>{if(modes.head&&faceDetector===detector){headLastError=error?.message||String(error);if(++headFrameErrors>=3||!['InvalidStateError','AbortError'].includes(error.name))void recoverHead(error);}}).finally(()=>{faceBusy=false});
  }
  frame=requestAnimationFrame(loop);
 }

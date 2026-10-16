@@ -16,8 +16,8 @@ function setup() {
   }
   const context = vm.createContext({
     Worker: FakeWorker, OffscreenCanvas: class {}, Blob,
-    URL: { createObjectURL: () => 'blob:test', revokeObjectURL() {} },
-    document: { getElementById: () => ({ textContent: '' }) },
+    URL,
+    document: { baseURI: 'https://example.test/between/' },
     performance: { now: () => time }, setTimeout, clearTimeout,
     createImageBitmap: async () => ({ close() { closedBitmaps++; } }),
   });
@@ -55,7 +55,8 @@ test('worker errors reject inference and shutdown settles an in-flight frame', a
   assert(worker.terminated); await assert.rejects(api.send({ image: {} }), /desactivado/);
 });
 test('worker releases transferred frames even when inference fails', async () => {
-  const workerCode = html.match(/<script type="text\/plain" id="between-head-worker-source">([\s\S]*?)<\/script>/)[1];
+  const root = fs.existsSync(published) ? path.join(__dirname, '..') : path.join(__dirname, '../github-pages');
+  const workerCode = fs.readFileSync(path.join(root, 'assets/head/head-worker.js'), 'utf8');
   let closed = false; const messages = [];
   const context = vm.createContext({ self: { postMessage: m => messages.push(m) }, performance: { now: () => 1000 } });
   vm.runInContext(workerCode, context);
