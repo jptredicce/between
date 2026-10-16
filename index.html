@@ -15744,8 +15744,8 @@ const modes={air:false,head:false,voice:false,handScroll:false};
 // Firefox uses a lighter face input; other browsers retain their existing tuning.
 const headFirefox=/Firefox\//.test(navigator.userAgent);
 const headProfile=headFirefox
- ? {maxWidth:320,calibrationFrames:10,lostAfter:650,blend:.70,refine:false}
- : {maxWidth:Infinity,calibrationFrames:20,lostAfter:400,blend:.50,refine:true};
+ ? {maxWidth:320,calibrationFrames:10,lostAfter:650,blend:.35,refine:false,interval:100,ease:8,maxStep:12}
+ : {maxWidth:Infinity,calibrationFrames:20,lostAfter:400,blend:.50,refine:true,interval:65,ease:19,maxStep:Infinity};
 let source=null,handDetector=null,faceDetector=null,handBusy=false,faceBusy=false,frame=0,lastFrame=0,starting={},loaders={};
 // Upload a decoded canvas frame rather than a hidden video texture to WebGL.
 const faceInput=document.createElement('canvas');
@@ -16056,18 +16056,18 @@ function loop(now){
   headSuspended=(window.betweenExternalAirActive&&now-(window.betweenExternalAirMotionAt||0)<850)||(now-physicalMouseAt<850);
   if(headSuspended){headSpeed=0;}
   else{
-    const factor=1-Math.exp(-(headTarget?19:23)*dt);
+    const factor=1-Math.exp(-(headTarget?headProfile.ease:23)*dt);
     headSpeed+=(headTarget-headSpeed)*factor;
     // Head already smooths speed above. CSS smooth scrolling would restart an
     // animation on every frame and prevent Firefox from reaching that speed.
-    if(Math.abs(headSpeed)>1)window.scrollBy({top:headSpeed*dt,left:0,behavior:'instant'});
+    if(Math.abs(headSpeed)>1)window.scrollBy({top:clamp(headSpeed*dt,-headProfile.maxStep,headProfile.maxStep),left:0,behavior:'instant'});
   }
  }
- // One analysis per type; 15fps each when both modes are active, avoiding overlapping requests.
+ // Keep face analysis at 10fps in Firefox to leave time for rendering; never overlap detector requests.
  if(source&&now-(loop.lastHand||0)>65&&(modes.air||modes.handScroll)&&handDetector&&!handBusy&&handVideo?.readyState>=2){
   loop.lastHand=now;handBusy=true;Promise.resolve(handDetector.send({image:handVideo})).catch(()=>{}).finally(()=>{handBusy=false});
  }
- if(source&&now-(loop.lastFace||0)>65&&modes.head&&faceDetector&&!faceBusy&&faceVideo?.readyState>=2){
+ if(source&&now-(loop.lastFace||0)>headProfile.interval&&modes.head&&faceDetector&&!faceBusy&&faceVideo?.readyState>=2){
   loop.lastFace=now;faceBusy=true;
   const detector=faceDetector;
   Promise.resolve().then(()=>{
