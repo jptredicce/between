@@ -16050,7 +16050,9 @@ function loop(now){
   else{
     const factor=1-Math.exp(-(headTarget?19:23)*dt);
     headSpeed+=(headTarget-headSpeed)*factor;
-    if(Math.abs(headSpeed)>1)window.scrollBy(0,headSpeed*dt);
+    // Head already smooths speed above. CSS smooth scrolling would restart an
+    // animation on every frame and prevent Firefox from reaching that speed.
+    if(Math.abs(headSpeed)>1)window.scrollBy({top:headSpeed*dt,left:0,behavior:'instant'});
   }
  }
  // One analysis per type; 15fps each when both modes are active, avoiding overlapping requests.
