@@ -15741,6 +15741,11 @@ if(!airBtn||!headBtn||!voiceBtn||!cursor)return;
 const SDK_HAND='https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4/';
 const SDK_FACE='https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh@0.4/';
 const modes={air:false,head:false,voice:false,handScroll:false};
+// Firefox uses a lighter face input; other browsers retain their existing tuning.
+const headFirefox=/Firefox\//.test(navigator.userAgent);
+const headProfile=headFirefox
+ ? {maxWidth:320,calibrationFrames:10,lostAfter:650,blend:.70,refine:false}
+ : {maxWidth:Infinity,calibrationFrames:20,lostAfter:400,blend:.50,refine:true};
 let source=null,handDetector=null,faceDetector=null,handBusy=false,faceBusy=false,frame=0,lastFrame=0,starting={},loaders={};
 // Upload a decoded canvas frame rather than a hidden video texture to WebGL.
 const faceInput=document.createElement('canvas');
@@ -15882,18 +15887,18 @@ function handleHands(result){
 function handleFace(result){
  if(!modes.head)return;
  const p=result.multiFaceLandmarks?.[0],now=performance.now();
- if(!p){if(now-faceLast>340){headTarget=0;headBtn.dataset.state='active';}return;}
+ if(!p){if(headFirefox||now-faceLast>340){headTarget=0;headBtn.dataset.state='active';}return;}
  faceLast=now;headBtn.dataset.state='tracking';
  const faceH=Math.max(.08,len(p[10],p[152]));
  const eyeY=(p[33].y+p[263].y)*.5;
  const pitch=(p[1].y-eyeY)/faceH;
  if(headPitchOrigin===null){
   calibration.push(pitch);
-  if(calibration.length<20){setStatus('Head · mirá al frente para calibrar');return;}
+  if(calibration.length<headProfile.calibrationFrames){setStatus('Head · mirá al frente para calibrar');return;}
   headPitchOrigin=calibration.reduce((a,b)=>a+b,0)/calibration.length;
   setStatus('Head · listo; incliná la cabeza arriba o abajo');
  }
- headDelta=headDelta*.50+(pitch-headPitchOrigin)*.50;
+ headDelta=headDelta*(1-headProfile.blend)+(pitch-headPitchOrigin)*headProfile.blend;
  const d=headDelta;
  headTarget=Math.abs(d)<.012?0:Math.sign(d)*clamp(95+Math.pow((Math.abs(d)-.012)*7200,1.09),95,1350);
 
@@ -15920,7 +15925,7 @@ async function initFace(){
  await Promise.all([startCamera(),load('face',SDK_FACE+'face_mesh.js','FaceMesh')]);
  if(!modes.head)return;
  faceDetector=new window.FaceMesh({locateFile:f=>SDK_FACE+f});
- faceDetector.setOptions({maxNumFaces:1,refineLandmarks:true,minDetectionConfidence:.55,minTrackingConfidence:.5});
+ faceDetector.setOptions({maxNumFaces:1,refineLandmarks:headProfile.refine,minDetectionConfidence:.55,minTrackingConfidence:.5});
  faceDetector.onResults(handleFace);headPitchOrigin=null;calibration=[];browOrigin=null;
  headDelta=0;headSpeed=0;headTarget=0;
  await faceDetector.initialize();
@@ -16037,7 +16042,7 @@ function loop(now){
   cursor.classList.toggle('is-hover',!!assist);
  }else cursor.style.display='none';
  if(modes.head){
-  if(now-faceLast>400)headTarget=0;
+  if(now-faceLast>headProfile.lostAfter)headTarget=0;
   // Suspend Head while the physical mouse or Air Mouse is being moved.
   // Keep the head mode enabled and resume after a short quiet interval.
   headSuspended=(window.betweenExternalAirActive&&now-(window.betweenExternalAirMotionAt||0)<850)||(now-physicalMouseAt<850);
@@ -16058,8 +16063,10 @@ function loop(now){
   Promise.resolve().then(()=>{
    if(!modes.head||faceDetector!==detector)return;
    if(!faceContext)throw new Error('No se pudo preparar la imagen de la cámara');
-   const w=faceVideo.videoWidth,h=faceVideo.videoHeight;
-   if(!w||!h)return;
+   const videoW=faceVideo.videoWidth,videoH=faceVideo.videoHeight;
+   if(!videoW||!videoH)return;
+   const scale=Math.min(1,headProfile.maxWidth/videoW);
+   const w=Math.max(1,Math.round(videoW*scale)),h=Math.max(1,Math.round(videoH*scale));
    if(faceInput.width!==w||faceInput.height!==h){faceInput.width=w;faceInput.height=h;}
    faceContext.drawImage(faceVideo,0,0,w,h);
    return detector.send({image:faceInput});
