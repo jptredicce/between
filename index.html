@@ -15924,11 +15924,16 @@ async function initHand(){
 async function initFace(){
  await Promise.all([startCamera(),load('face',SDK_FACE+'face_mesh.js','FaceMesh')]);
  if(!modes.head)return;
- faceDetector=new window.FaceMesh({locateFile:f=>SDK_FACE+f});
- faceDetector.setOptions({maxNumFaces:1,refineLandmarks:headProfile.refine,minDetectionConfidence:.55,minTrackingConfidence:.5});
- faceDetector.onResults(handleFace);headPitchOrigin=null;calibration=[];browOrigin=null;
+ // Keep the detector private until WASM initialization has finished. The frame
+ // loop must never call send() while initialize() is still loading its memory.
+ const detector=new window.FaceMesh({locateFile:f=>SDK_FACE+f});
+ detector.setOptions({maxNumFaces:1,refineLandmarks:headProfile.refine,minDetectionConfidence:.55,minTrackingConfidence:.5});
+ detector.onResults(handleFace);headPitchOrigin=null;calibration=[];browOrigin=null;
  headDelta=0;headSpeed=0;headTarget=0;
- await faceDetector.initialize();
+ try{await detector.initialize();}
+ catch(error){try{await detector.close();}catch(_){}throw error;}
+ if(!modes.head){await detector.close();return;}
+ faceDetector=detector;
 }
 async function toggleAir(){
  if(modes.air){modes.air=false;setMode(airBtn,false);cursor.style.display='none';if(!modes.handScroll){handDetector?.close();handDetector=null;}stopCameraIfUnused();return;}
@@ -15947,11 +15952,14 @@ function failHead(error){
  setStatus('Head · '+message);stopCameraIfUnused();
 }
 async function toggleHead(){
+ if(starting.head)return;
  if(modes.head){modes.head=false;headTarget=0;setMode(headBtn,false);faceDetector?.close();faceDetector=null;stopCameraIfUnused();return;}
  
  modes.head=true;setMode(headBtn,true,'active');setStatus('Head · autorizá la cámara');
- try{if(!faceDetector)await initFace();setStatus('Head · mirá al frente para calibrar');}
+ starting.head=true;headBtn.disabled=true;
+ try{if(!faceDetector)await initFace();if(modes.head)setStatus('Head · mirá al frente para calibrar');}
  catch(e){failHead(e);}
+ finally{starting.head=false;headBtn.disabled=false;}
 }
 // Voice guide with predefined answers; standalone spoken UI, never opens chat.
 const Recognition=window.SpeechRecognition||window.webkitSpeechRecognition;
