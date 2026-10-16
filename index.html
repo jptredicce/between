@@ -16064,24 +16064,16 @@ qa.innerHTML='<div class="voice-conversation" aria-live="polite"><strong>Guía d
 mmRoot?.append(qa);
 function answerQuestion(question){
  const f=facts.find(v=>v.re.test(question));
- const answers=[
- 'Between es una infraestructura de coordinación entre empresas. Sus agentes ayudan a proveedores y clientes a negociar, verificar compromisos y coordinar decisiones.',
- 'Cada empresa mantiene el control de sus datos. Between coordina las decisiones usando la información necesaria para el trabajo compartido.',
- 'Los agentes de cada empresa negocian, verifican y documentan decisiones en un registro compartido que ambas partes pueden consultar.',
- 'El registro compartido permite revisar qué hizo cada agente y qué decisiones se aprobaron. La página muestra el concepto; no está conectada a operaciones reales.',
- 'Between está pensado para coordinar relaciones entre proveedores y clientes, incluyendo inventario y compromisos comerciales.',
- 'Para explorar una demostración, usá Request Access. El contacto de esta maqueta todavía es un ejemplo y necesita configurarse.'
- ];
- return f?answers[facts.indexOf(f)]:'Soy la guía de esta página de Between. Puedo explicarte qué es Between, cómo funcionan sus agentes, la privacidad y el registro compartido. Todavía no estoy conectada a una IA para preguntas libres.';
+ return f?f.a:'I am the guide to this Between page. You can ask me about Between, its agents, privacy and the shared ledger.';
 }
 function speakAnswer(text){
  if(!('speechSynthesis' in window)){setStatus('Este navegador no permite reproducir respuestas');return;}
  clearTimeout(voiceTimeout);
  if(voiceInstance){try{voiceInstance.abort()}catch(e){}}
  speechSynthesis.cancel();assistantSpeaking=true;voiceBtn.dataset.state='speaking';setStatus('Voice · respondiendo');qa.querySelector('.voice-answer').textContent=text;
- const utterance=new SpeechSynthesisUtterance(text);utterance.lang='es-ES';utterance.rate=.96;utterance.pitch=1;
+ const utterance=new SpeechSynthesisUtterance(text);utterance.lang='en-US';utterance.rate=.96;utterance.pitch=1;
  const voices=speechSynthesis.getVoices();
- utterance.voice=voices.find(v=>/^es/i.test(v.lang)&&/Monica|Mónica|Paulina|Luciana|Natural|Google/i.test(v.name))||voices.find(v=>/^es/i.test(v.lang))||null;
+ utterance.voice=voices.find(v=>/^en/i.test(v.lang)&&/Samantha|Ava|Allison|Jenny|Aria|Natural|Google US English/i.test(v.name))||voices.find(v=>/^en-US/i.test(v.lang))||voices.find(v=>/^en/i.test(v.lang))||null;
  utterance.onend=utterance.onerror=()=>{assistantSpeaking=false;if(modes.voice){voiceBtn.dataset.state='active';setStatus(voiceInstance?'Voice · esperando pregunta':'Voice · escribí tu pregunta');if(voiceInstance)scheduleListen(700);}};
  speechSynthesis.speak(utterance);
 }
@@ -16100,7 +16092,7 @@ function stopVoice(){
 function toggleVoice(){
  if(modes.voice){stopVoice();return;}
  modes.voice=true;setMode(voiceBtn,true);qa.hidden=false;
- if(!Recognition){setStatus('Voice · Safari no puede transcribir desde este archivo; escribí tu pregunta y escucharás la respuesta.');speakAnswer('Hola, soy la guía de Between. Podés preguntarme por los agentes, la privacidad y el registro compartido.');return;}
+ if(!Recognition){setStatus('Voice · Safari no puede transcribir desde este archivo; escribí tu pregunta y escucharás la respuesta.');speakAnswer('Hello, I am the Between guide. Ask me about our agents, privacy or the shared ledger.');return;}
  try{
   voiceInstance=new Recognition();voiceInstance.lang='es-ES';voiceInstance.continuous=false;voiceInstance.interimResults=false;voiceInstance.maxAlternatives=1;
   voiceInstance.onresult=e=>{const q=Array.from(e.results,r=>r[0]?.transcript||'').join(' ').trim();if(q&&modes.voice){qa.querySelector('.voice-question').textContent='Vos: '+q;setStatus('Escuché: '+q);speakAnswer(answerQuestion(q));}};
